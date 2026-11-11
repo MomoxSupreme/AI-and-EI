@@ -3,17 +3,15 @@ import os
 import numpy as np
 import random
 from torchaudio.transforms import MelSpectrogram
-from diffusers import ConfigMixin, Mel, ModelMixin
 import torchaudio
-import librosa
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from prettytable import PrettyTable
+# from prettytable import PrettyTable
 from codecarbon import EmissionsTracker
-from thop import profile, clever_format
+# from thop import profile, clever_format
 import pandas as pd
 from collections import OrderedDict
 from utils import pad_audio, to_mono
@@ -24,7 +22,7 @@ class WeakDataset(Dataset):
     def __init__(self, target_len, fs, batch_size, num_frames, preprocess_function):
         data_path = 'data'     
         data_folder = os.path.join(data_path, 'DESED_public_eval/audio/train/')
-        metadata_file = os.path.join(data_path, 'DESED_public_eval/metadata/train/public_weak.tsv')
+        metadata_file = os.path.join(data_folder, "..", 'public_weak.tsv')
         self.data_folder = data_folder
         self.load_classes_labels()
         self.load_meta(metadata_file)
@@ -47,7 +45,7 @@ class WeakDataset(Dataset):
         X = self.preprocess_function(file_path)
         y = self.metadata[filename][0]
         
-        return X, y[0]
+        return X, y
 
     def load_meta(self, meta_file):
         # Initialize an empty metadata dictionary

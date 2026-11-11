@@ -30,6 +30,7 @@ def main():
     valid_loader = DataLoader(valid_dataset, batch_size=8, shuffle=False)
 
     checkpoint = ModelCheckpoint(
+        dirpath="models",
         monitor="val_loss",
         mode="min",
         save_top_k=1,

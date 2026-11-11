@@ -4,6 +4,7 @@ import torchaudio
 import lightning.pytorch as L
 from transformers import AutoModelForAudioClassification, AutoFeatureExtractor
 from config import *
+from train import train_step, valid_step
 
 
 class CedAudioClassifier(L.LightningModule):
@@ -63,6 +64,14 @@ class CedAudioClassifier(L.LightningModule):
             audio = torchaudio.transforms.Resample(
                 orig_freq=sampling_rate, new_freq=TARGET_RATE
             )(audio)
+        if audio.ndim != 2:
+            raise ValueError(f"Expected audio with shape [channels, samples], got {audio.shape}")
+        audio = audio.mean(dim=0)
+        target_samples = 10 * TARGET_RATE
+        if audio.shape[-1] < target_samples:
+            audio = nn.functional.pad(audio, (0, target_samples - audio.shape[-1]))
+        else:
+            audio = audio[:target_samples]
         return self.feature_extractor(audio, sampling_rate=TARGET_RATE, return_tensors="pt")
 
     def preprocess_function(self, audio_path):
@@ -72,38 +81,16 @@ class CedAudioClassifier(L.LightningModule):
     # nn.Module API
     # ------------------------------------------------------------------ #
     def forward(self, input_values, labels=None, **kwargs):
-        if input_values.ndim == 3 and input_values.shape[1] == 1:
+        if input_values.ndim == 4 and input_values.shape[1] == 1:
             input_values = input_values.squeeze(1)
         return self.model(input_values=input_values, labels=labels, **kwargs)
 
-    def _step(self, batch, stage: str):
-        inputs, labels = batch
-        outputs = self(**inputs)
-        loss = nn.functional.cross_entropy(outputs.logits, labels)
-        accuracy = (outputs.logits.argmax(dim=1) == labels).float().mean()
-        self.log(
-            f"{stage}_loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            batch_size=labels.size(0),
-        )
-        self.log(
-            f"{stage}_accuracy",
-            accuracy,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            batch_size=labels.size(0),
-        )
-        return loss
 
     def training_step(self, batch, batch_idx):
-        return self._step(batch, "train")
+        return train_step(self, batch)
 
     def validation_step(self, batch, batch_idx):
-        self._step(batch, "val")
+        valid_step(self, batch)
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
