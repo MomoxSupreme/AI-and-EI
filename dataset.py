@@ -9,47 +9,96 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from pprint import pprint
 # from prettytable import PrettyTable
 from codecarbon import EmissionsTracker
 # from thop import profile, clever_format
 import pandas as pd
+from config import DEVICE
 from collections import OrderedDict
 from utils import pad_audio, to_mono
 
 
+class CachedEmbeddingDataset(Dataset):
+    def __init__(
+        self,
+        target_len=None,
+        fs=None,
+        batch_size=None,
+        num_frames=None,
+        preprocess_function=None,
+        backbone=None,
+        cache_path=None,
+    ):
+        self.cache_path = cache_path
+        if cache_path is not None and os.path.exists(cache_path):
+            self.load_cache(cache_path)
+            return
 
-class WeakDataset(Dataset):
-    def __init__(self, target_len, fs, batch_size, num_frames, preprocess_function):
-        data_path = 'data'     
-        data_folder = os.path.join(data_path, 'DESED_public_eval/audio/train/')
-        metadata_file = os.path.join(data_folder, "..", 'public_weak.tsv')
+        data_path = "data"
+        data_folder = os.path.join(data_path, "DESED_public_eval/audio/train/")
+        metadata_file = os.path.join(data_folder, "..", "public_weak.tsv")
         self.data_folder = data_folder
         self.load_classes_labels()
         self.load_meta(metadata_file)
         self.batch_size = batch_size
         self.fs = fs
-        self.target_len = 10 * fs
+        self.target_len = target_len
         self.file_list = os.listdir(data_folder)
         self.num_frames = num_frames
         self.preprocess_function = preprocess_function
-        self.target_len = target_len
+
+        if backbone is not None and cache_path is not None:
+            self.cache_embeddings(backbone, cache_path)
+            self.load_cache(cache_path)
 
     def __len__(self):
+        if hasattr(self, "labels"):
+            return len(self.labels)
         return len(self.file_list)
 
     def __getitem__(self, idx):
-        
+        if hasattr(self, "embeddings"):
+            return self.embeddings[idx], self.labels[idx]
+
         filename = self.file_list[idx]
         file_path = os.path.join(self.data_folder, filename)
-    
+
         X = self.preprocess_function(file_path)
         y = self.metadata[filename][0]
-        
+
         return X, y
+
+    def cache_embeddings(self, backbone, cache_path):
+        """Encode every audio sample once and store the resulting embeddings."""
+        was_training = backbone.training
+        backbone.eval()
+        embeddings = []
+        labels = []
+        with torch.no_grad():
+            for idx in tqdm(range(len(self)), desc="Encoding dataset"):
+                inputs, label = self[idx]
+                embedding = backbone.encode(**inputs).squeeze(0).cpu()
+                embeddings.append(embedding)
+                labels.append(label)
+        if was_training:
+            backbone.train()
+
+        data = {
+            "embeddings": torch.stack(embeddings),
+            "labels": torch.tensor(labels, dtype=torch.long),
+        }
+        torch.save(data, cache_path)
+
+    def load_cache(self, cache_path):
+        data = torch.load(cache_path, map_location=DEVICE)
+        self.embeddings = data["embeddings"]
+        self.labels = data["labels"]
 
     def load_meta(self, meta_file):
         # Initialize an empty metadata dictionary
         self.metadata = {}
+        class_counts = {class_name: 0 for class_name in self.classes_labels}
 
         # Read the metadata file (weak.tsv) while skipping the first line (headers)
         with open(meta_file, 'r') as file:
@@ -63,9 +112,15 @@ class WeakDataset(Dataset):
 
                 # Map each event label to a number and store in a list
                 encoded_event_labels = [self.classes_labels.get(label, -1) for label in event_labels]
+                for label in event_labels:
+                    if label in class_counts:
+                        class_counts[label] += 1
 
                 # Add the filename and encoded event labels to the metadata dictionary
                 self.metadata[filename] = encoded_event_labels
+
+        print("Dataset samples per class:")
+        pprint(class_counts)
 
 
     def load_classes_labels(self):

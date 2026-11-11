@@ -3,19 +3,23 @@ import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from torch.utils.data import DataLoader, random_split
 
-from config import TARGET_RATE
-from dataset import WeakDataset
+from config import TARGET_RATE, MODELS_CED, N_CLASSES
+from dataset import CachedEmbeddingDataset
 from models import CedAudioClassifier
+import os
 
 
 def main():
-    model = CedAudioClassifier(n_classes=10)
-    dataset = WeakDataset(
+    model = CedAudioClassifier(n_classes=N_CLASSES, model_name=MODELS_CED[0])
+    embeddings_path = os.path.join("embeddings", f"{MODELS_CED[0]}_embeddings.pt")
+    dataset = CachedEmbeddingDataset(
         target_len=10 * TARGET_RATE,
         fs=TARGET_RATE,
         batch_size=8,
         num_frames=1,
         preprocess_function=model.preprocess_function,
+        backbone=model,
+        cache_path="models/ced_embeddings.pt",
     )
 
     train_size = int(0.8 * len(dataset))

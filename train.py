@@ -7,8 +7,8 @@ The Lightning Trainer is configured and started in ``main.py``.
 import torch.nn as nn
 
 def step(self, batch, stage: str):
-    inputs, labels = batch
-    outputs = self(**inputs)
+    embeddings, labels = batch
+    outputs = self(embeddings)
     loss = nn.functional.cross_entropy(outputs.logits, labels)
     accuracy = (outputs.logits.argmax(dim=1) == labels).float().mean()
     self.log(
