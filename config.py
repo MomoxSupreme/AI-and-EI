@@ -7,8 +7,9 @@ MODEL_NAME = "mispeech/ced-base"
 TARGET_RATE = 16000
 LEARNING_RATE = 0.001
 N_CLASSES = 10
+N_BEST_RAG = 3
 
-DEVICE = "cuda"
+DEVICE = "cpu"
 
 MODELS_CED = ["mispeech/ced-tiny", "mispeech/ced-mini", "mispeech/ced-small", "mispeech/ced-base"]
 
@@ -20,4 +21,3 @@ MODELS = ["bookbot/distil-ast-audioset", "MIT/ast-finetuned-audioset-10-10-0.459
 OPTIMIZER = torch.optim.AdamW
 
 SCHEDULER = torch.optim.lr_scheduler.ReduceLROnPlateau
-

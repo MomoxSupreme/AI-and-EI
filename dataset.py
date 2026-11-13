@@ -65,7 +65,8 @@ class CachedEmbeddingDataset(Dataset):
         file_path = os.path.join(self.data_folder, filename)
 
         X = self.preprocess_function(file_path)
-        y = self.metadata[filename][0]
+        y = torch.zeros(len(self.classes_labels), dtype=torch.float32)
+        y[self.metadata[filename]] = 1.0
 
         return X, y
 
@@ -86,7 +87,7 @@ class CachedEmbeddingDataset(Dataset):
 
         data = {
             "embeddings": torch.stack(embeddings),
-            "labels": torch.tensor(labels, dtype=torch.long),
+            "labels": torch.stack(labels),
         }
         torch.save(data, cache_path)
 
@@ -111,13 +112,19 @@ class CachedEmbeddingDataset(Dataset):
                 event_labels = parts[1].split(',')
 
                 # Map each event label to a number and store in a list
-                encoded_event_labels = [self.classes_labels.get(label, -1) for label in event_labels]
                 for label in event_labels:
                     if label in class_counts:
                         class_counts[label] += 1
 
-                # Add the filename and encoded event labels to the metadata dictionary
-                self.metadata[filename] = encoded_event_labels
+                encoded_event_labels = [
+                    self.classes_labels[label]
+                    for label in event_labels
+                    if label in self.classes_labels
+                ]
+                current_labels = self.metadata.setdefault(filename, [])
+                for encoded_label in encoded_event_labels:
+                    if encoded_label not in current_labels:
+                        current_labels.append(encoded_label)
 
         print("Dataset samples per class:")
         pprint(class_counts)

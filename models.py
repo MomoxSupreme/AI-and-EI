@@ -54,6 +54,16 @@ class BaseModel(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         valid_step(self, batch)
 
+    def on_train_epoch_start(self):
+        learning_rate = self.optimizers().param_groups[0]["lr"]
+        self.log(
+            "learning_rate",
+            learning_rate,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+        )
+
     def configure_optimizers(self):
         optimizer = OPTIMIZER(
             self.trainable_parameters(), lr=LEARNING_RATE
@@ -74,13 +84,13 @@ class BaseModel(L.LightningModule):
             },
         }
 
-    def predict(self, audio_path: str) -> int:
-        """Return the predicted class id for one audio file."""
+    def predict(self, audio_path: str) -> list[int]:
+        """Return all class ids whose predicted probability reaches 0.5."""
         inputs = self.prepare_audio(audio_path)
         with torch.no_grad():
             embeddings = self.encode(**inputs)
             logits = self(embeddings).logits
-        return logits.squeeze().argmax().item()
+        return torch.where(logits.squeeze().sigmoid() >= 0.5)[0].tolist()
 
     # ------------------------------------------------------------------ #
     # Training helpers
@@ -98,6 +108,41 @@ class BaseModel(L.LightningModule):
     def save_pretrained(self, out_dir: str):
         self.model.save_pretrained(out_dir)
         self.feature_extractor.save_pretrained(out_dir)
+
+    def prepare_audio(self, audio_path: str) -> dict:
+        """Load, resample to 16 kHz, and feature-extract a single audio file."""
+        audio, sampling_rate = torchaudio.load(audio_path)
+        if sampling_rate != TARGET_RATE:
+            audio = torchaudio.transforms.Resample(
+                orig_freq=sampling_rate, new_freq=TARGET_RATE
+            )(audio)
+        if audio.ndim != 2:
+            raise ValueError(f"Expected audio with shape [channels, samples], got {audio.shape}")
+        audio = audio.mean(dim=0)
+        target_samples = 10 * TARGET_RATE
+        if audio.shape[-1] < target_samples:
+            audio = nn.functional.pad(audio, (0, target_samples - audio.shape[-1]))
+        else:
+            audio = audio[:target_samples]
+        return self.feature_extractor(audio, sampling_rate=TARGET_RATE, return_tensors="pt")
+
+
+    def preprocess_function(self, audio_path):
+        return self.prepare_audio(audio_path)
+
+    # ------------------------------------------------------------------ #
+    # nn.Module API
+    # ------------------------------------------------------------------ #
+    def encode(self, input_values, **kwargs):
+        if input_values.ndim == 4 and input_values.shape[1] == 1:
+            input_values = input_values.squeeze(1)
+        with torch.no_grad():
+            outputs = self.backbone(input_values=input_values)
+        return self._pool_embeddings(outputs)
+
+    def forward(self, embeddings, **kwargs):
+        logits = self.outputlayer(embeddings)
+        return SequenceClassifierOutput(logits=logits)
 
 class CedAudioClassifier(BaseModel):
     """Combines the CED feature extractor and classification model into one module.
@@ -141,39 +186,9 @@ class CedAudioClassifier(BaseModel):
     # ------------------------------------------------------------------ #
     # Audio preprocessing
     # ------------------------------------------------------------------ #
-    def prepare_audio(self, audio_path: str) -> dict:
-        """Load, resample to 16 kHz, and feature-extract a single audio file."""
-        audio, sampling_rate = torchaudio.load(audio_path)
-        if sampling_rate != TARGET_RATE:
-            audio = torchaudio.transforms.Resample(
-                orig_freq=sampling_rate, new_freq=TARGET_RATE
-            )(audio)
-        if audio.ndim != 2:
-            raise ValueError(f"Expected audio with shape [channels, samples], got {audio.shape}")
-        audio = audio.mean(dim=0)
-        target_samples = 10 * TARGET_RATE
-        if audio.shape[-1] < target_samples:
-            audio = nn.functional.pad(audio, (0, target_samples - audio.shape[-1]))
-        else:
-            audio = audio[:target_samples]
-        return self.feature_extractor(audio, sampling_rate=TARGET_RATE, return_tensors="pt")
+    
 
-    def preprocess_function(self, audio_path):
-        return self.prepare_audio(audio_path)
-
-    # ------------------------------------------------------------------ #
-    # nn.Module API
-    # ------------------------------------------------------------------ #
-    def encode(self, input_values, **kwargs):
-        if input_values.ndim == 4 and input_values.shape[1] == 1:
-            input_values = input_values.squeeze(1)
-        with torch.no_grad():
-            outputs = self.backbone(input_values=input_values)
-        return self._pool_embeddings(outputs)
-
-    def forward(self, embeddings, **kwargs):
-        logits = self.outputlayer(embeddings)
-        return SequenceClassifierOutput(logits=logits)
+    
 
 
 class WhisperAudioClassifier(BaseModel):
@@ -211,18 +226,8 @@ class WhisperAudioClassifier(BaseModel):
         self._freeze_backbone()
 
     def encode(self, input_features, **kwargs):
+        if input_features.ndim == 4 and input_features.shape[1] == 1:
+            input_features = input_features.squeeze(1)
         with torch.no_grad():
-            outputs = self.encoder(
-                input_features=input_features,
-                output_hidden_states=True,
-                return_dict=True,
-                **kwargs,
-            )
+            outputs = self.backbone(input_features=input_features)
         return self._pool_embeddings(outputs)
-
-    def forward(self, embeddings, **kwargs):
-        logits = self.outputlayer(embeddings)
-
-        return SequenceClassifierOutput(
-            logits=logits,
-        )
