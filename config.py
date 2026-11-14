@@ -9,7 +9,7 @@ LEARNING_RATE = 0.001
 N_CLASSES = 10
 N_BEST_RAG = 3
 
-DEVICE = "cpu"
+DEVICE = "cuda"
 
 MODELS_CED = ["mispeech/ced-tiny", "mispeech/ced-mini", "mispeech/ced-small", "mispeech/ced-base"]
 
