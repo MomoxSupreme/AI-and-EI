@@ -59,7 +59,7 @@ def read_config():
     n_best_rag = config.getint('Hyperparameters', 'n_best_rag')
     frames_per_second = config.getint('Hyperparameters', 'frames_per_second')
     audio_seconds = config.getint('Hyperparameters', 'audio_seconds')
-
+    epochs= config.getint('Hyperparameters', 'EPOCHS')
     raw_train_datas_path = config.get('Datas', 'raw_train_datas_path')
     raw_test_datas_path = config.get('Datas', 'raw_test_datas_path')
     train_metadata_path = config.get('Datas', 'train_metadata_path')
@@ -101,7 +101,8 @@ def read_config():
         'train_metadata_path': train_metadata_path,
         'test_metadata_path': eval_metadata_path,
 
-        'early_stopping_patience': early_stopping_patience
+        'early_stopping_patience': early_stopping_patience,
+        'epochs': epochs
 
     }
 

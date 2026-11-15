@@ -224,3 +224,5 @@ test.py
 
 Data/raw/metadata
 Data/raw/audio
+
+.vscode

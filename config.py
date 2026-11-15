@@ -28,6 +28,7 @@ def create_config():
         'N_BEST_RAG': '3',
         'FRAMES_PER_SECOND': '50',
         'AUDIO_SECONDS': '10',
+        'EPOCHS': '10'
     }
 
     config['Scheduler'] = {

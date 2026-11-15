@@ -19,12 +19,14 @@ from Utils.visualize import *
 
 
 
-def train_m5(config=None, batch_size=32, epochs=10, save_dir="./Models/Saved_Models"):
+def train_m5(config=None, batch_size=32, save_dir="./Models/Saved_Models"):
     config = config if config is not None else read_config()
     torch.manual_seed(config["seed"])
     device = config["device"]
     learning_rate = config["learning_rate"]
     n_classes = config["n_classes"]
+
+    epochs=config["epochs"]
 
     train_dataset = DesedDataset(split="train", config=config)
     test_dataset = DesedDataset(split="test", config=config)
@@ -124,7 +126,7 @@ def train_m5(config=None, batch_size=32, epochs=10, save_dir="./Models/Saved_Mod
     return model, {"train_loss": train_losses_history, "val_loss": val_losses_history, "val_f1": val_f1_history}
 
 
-def train_cnn(config=None, batch_size=32, epochs=10, save_dir="./Models/Saved_Models"):
+def train_cnn(config=None, batch_size=32, save_dir="./Models/Saved_Models"):
     config = config if config is not None else read_config()
     torch.manual_seed(config["seed"])
     device = config["device"]
@@ -151,6 +153,8 @@ def train_cnn(config=None, batch_size=32, epochs=10, save_dir="./Models/Saved_Mo
     train_losses_history = []
     val_losses_history = []
     val_f1_history = []
+
+    epochs = config["epochs"]
 
     print("\n--- Entraînement CRNN ---")
     for epoch in range(epochs):
