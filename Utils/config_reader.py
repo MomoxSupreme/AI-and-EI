@@ -60,6 +60,11 @@ def read_config():
     frames_per_second = config.getint('Hyperparameters', 'frames_per_secon')
     audio_seconds = config.getint('Hyperparameters', 'audio_seconds')
 
+    raw_train_datas_path = config.get('Datas', 'raw_train_datas_path')
+    raw_test_datas_path = config.get('Datas', 'raw_test_datas_path')
+    train_metadata_path = config.get('Datas', 'train_metadata_path')
+    eval_metadata_path = config.get('Datas', 'eval_metadata_path')
+
     # Scheduler
     scheduler = config.get('Scheduler', 'scheduler')
 
@@ -69,7 +74,7 @@ def read_config():
         'log_level': log_level,
 
         'device': device,
-        
+
         'optimizer': optimizer,
         'loss': loss,
 
@@ -81,7 +86,12 @@ def read_config():
         'frames_per_second': frames_per_second,
         'audio_seconds': audio_seconds,
 
-        'scheduler': scheduler
+        'scheduler': scheduler,
+        
+        'raw_train_datas_path': raw_train_datas_path,
+        'raw_test_datas_path': raw_test_datas_path,
+        'train_metadata_path': train_metadata_path,
+        'test_metadata_path': eval_metadata_path
     }
 
     return config_values

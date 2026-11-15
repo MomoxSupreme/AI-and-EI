@@ -34,6 +34,13 @@ def create_config():
         'SCHEDULER': 'Sbzkz'
     }
 
+    config['Datas'] = {
+        'raw_train_datas_path': "./Data/raw/audio/eval/",
+        'raw_test_datas_path': "./Data/raw/audio/train/",
+        'train_metadata_path': "./Data/raw/metadata/eval/public_weak.tsv",
+        'eval_metadata_path': "./Data/raw/metadata/train/public_weak.tsv"
+    }
+
     # Write the configuration to a file
     with open('config.ini', 'w') as configfile:
         config.write(configfile)

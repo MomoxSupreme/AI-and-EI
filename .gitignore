@@ -221,3 +221,6 @@ __marimo__/
 
 #test
 test.py
+
+Data/raw/metadata
+Data/raw/audio
