@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 from Utils.config_reader import read_config
 from Utils.datasets import DesedDataset, DesedMelDataset, MicroDataLoader
-from Models.models import CNNModel, M5model
+from Models.models import CRNNModel, M5model
 from Utils.scheduler import EarlyStopping
 from Utils.visualize import *
 
