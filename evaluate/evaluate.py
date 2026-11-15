@@ -1,6 +1,7 @@
 import pandas as pd
 import torch
 from training import *
+from test import *
 from Utils.config_reader import read_config
 from Utils.stats import get_pytorch_stats, get_svm_stats
 from codecarbon import EmissionsTracker
@@ -70,20 +71,20 @@ def main():
     models = {
         "M5": {
             "train": train_m5,
-            "test": test_M5,
-            "test_data": test_loader_m5,     
-            "sample_input": sample_input_m5 
+            "test": test_m5,
+            "test_data": None,     
+            "sample_input": torch.randn(1, 160000)
         },
         "CRNN": {
             "train": train_cnn,
-            "test": test_CRNN,
-            "test_data": test_loader_crnn,     
-            "sample_input": sample_input_crnn  
+            "test": test_crnn,
+            "test_data": None,     
+            "sample_input": torch.randn(1, 128, 626)
         },
         "SVM": {
             "train": train_svm,
-            "test": test_SVM,
-            "test_data": X_test_svm,           # Données de test (array/tuple) pour SVM
+            "test": test_svm,
+            "test_data": None,          
             "sample_input": None
         }
     }
