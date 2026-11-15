@@ -1,10 +1,7 @@
-"""
-fichier qui regroupe l'entraînement des différents modèles
-"""
-
+import os
+import joblib
 import matplotlib.pyplot as plt
 import numpy as np
-import sklearn
 import torch
 from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.model_selection import GridSearchCV
@@ -15,12 +12,16 @@ from torch.utils.data import DataLoader
 from config_reader import read_config
 from datasets import DesedDataset, DesedMelDataset, MicroDataLoader
 from models import CNNModel, M5model
+from Utils.scheduler import EarlyStopping
+from Utils.visualize import *
 
 
-#entraînement du M5
 
-def train_m5(config=None, batch_size=32, epochs=10):
+
+
+def train_m5(config=None, batch_size=32, epochs=10, save_dir="./Models/Saved_Models"):
     config = config if config is not None else read_config()
+    torch.manual_seed(config["seed"])
     device = config["device"]
     learning_rate = config["learning_rate"]
     n_classes = config["n_classes"]
@@ -29,86 +30,103 @@ def train_m5(config=None, batch_size=32, epochs=10):
     test_dataset = DesedDataset(split="test", config=config)
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    model = M5model(n_classes)
+    model = M5model(n_classes).to(device)
     loss_fn = config["loss"]()
     optimizer = config["optimizer"](model.parameters(), lr=learning_rate)
 
-    model.to(device)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=config.get("scheduler_factor", 0.5),
+        patience=config.get("scheduler_patience", 3),
+    )
+    early_stopping = EarlyStopping(patience=config.get("early_stopping_patience", 6))
 
     train_losses_history = []
-    test_losses_history = []
-    test_acc_history = []
+    val_losses_history = []
+    val_f1_history = []
 
+    print("\n--- Entraînement M5 ---")
     for epoch in range(epochs):
         model.train()
+        running_train_loss = 0.0
 
-        for data in train_dataloader:
-            x = data[0].to(device)
-            y_target = data[1].to(device)
-
-            x_logits = model(x)
-            loss = loss_fn(x_logits, y_target)
+        for step, (x, y_target) in enumerate(train_dataloader, start=1):
+            x, y_target = x.to(device), y_target.to(device)
 
             optimizer.zero_grad()
+            x_logits = model(x)
+            loss = loss_fn(x_logits, y_target)
             loss.backward()
             optimizer.step()
 
-            train_losses_history.append(loss.item())
+            running_train_loss += loss.item()
+            print_progress_bar(
+                step,
+                len(train_dataloader),
+                prefix=f"Epoch {epoch+1}/{epochs}",
+                suffix=f"| Batch Loss: {loss.item():.4f}",
+            )
+
+        avg_train_loss = running_train_loss / len(train_dataloader)
+        train_losses_history.append(avg_train_loss)
 
         model.eval()
-        for data in test_dataloader:
-            with torch.inference_mode():
-                test_logits = data[0].to(device)
-                y_test = data[1].to(device)
+        running_val_loss = 0.0
+        all_preds = []
+        all_targets = []
 
-                test_logits = model(test_logits)
+        with torch.inference_mode():
+            for x_test, y_test in test_dataloader:
+                x_test, y_test = x_test.to(device), y_test.to(device)
+
+                test_logits = model(x_test)
                 test_loss = loss_fn(test_logits, y_test)
-                test_losses_history.append(test_loss.item())
+                running_val_loss += test_loss.item()
 
                 y_pred = torch.round(torch.sigmoid(test_logits))
-                test_acc = f1_score(y_test.to("cpu"), y_pred.to("cpu"), average="macro")
-                test_acc_history.append(test_acc)
+                all_preds.append(y_pred.cpu())
+                all_targets.append(y_test.cpu())
 
-        progress_percent = (epoch + 1) / epochs * 100
-        progress_view = ["▮"] * int(progress_percent) + ["▯"] * (100 - int(progress_percent))
-        print("loss : ", train_losses_history[-1])
-        print(f"Epoch {epoch+1}/{epochs} [{''.join(progress_view)}] ")
+        avg_val_loss = running_val_loss / len(test_dataloader)
+        val_losses_history.append(avg_val_loss)
 
-    plt.figure(figsize=(10, 5))
-    plt.plot(test_acc_history, label="Loss par batch", color="orangered")
-    plt.xlabel("Iterations (Batches)")
-    plt.ylabel("Valeur de la Loss")
-    plt.title("Évolution de la Loss au cours de l'entraînement")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-    print(test_losses_history)
+        all_preds = torch.cat(all_preds, dim=0)
+        all_targets = torch.cat(all_targets, dim=0)
+        epoch_f1 = f1_score(all_targets, all_preds, average="macro")
+        val_f1_history.append(epoch_f1)
 
-    f1_mean = 0
-    n = 0
-    model.eval()
-    with torch.inference_mode():
-        for data in test_dataloader:
-            n += 1
-            x = data[0].to(device)
-            y = data[1].to(device)
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(
+            f"   -> Train Loss: {avg_train_loss:.4f} | "
+            f"Val Loss: {avg_val_loss:.4f} | "
+            f"Val F1: {epoch_f1:.4f} | "
+            f"LR: {current_lr:.6f}"
+        )
 
-            y_logits = model(x)
-            y_pred = torch.round(torch.sigmoid(y_logits))
+        scheduler.step(avg_val_loss)
+        early_stopping(avg_val_loss, model)
 
-            f1_mean += f1_score(y.to("cpu"), y_pred.to("cpu"), average="macro")
+        if early_stopping.early_stop:
+            print(f"Early stopping à l'epoch {epoch+1} (meilleure Val Loss : {early_stopping.best_loss:.4f})")
+            break
 
-    f1_mean = f1_mean / n
-    print("la f1_mean est :", f1_mean)
-    return model
+    early_stopping.load_best_weights(model)
+
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, "m5_best.pth")
+    torch.save(model.state_dict(), save_path)
+    print(f"Modèle M5 sauvegardé dans : {save_path}")
+
+    plot_history(train_losses_history, val_losses_history, val_f1_history, "M5")
+    return model, {"train_loss": train_losses_history, "val_loss": val_losses_history, "val_f1": val_f1_history}
 
 
-#entraînement du crnn
-
-def train_cnn(config=None, batch_size=32, epochs=1):
+def train_cnn(config=None, batch_size=32, epochs=10, save_dir="./Models/Saved_Models"):
     config = config if config is not None else read_config()
+    torch.manual_seed(config["seed"])
     device = config["device"]
     learning_rate = config["learning_rate"]
 
@@ -116,62 +134,108 @@ def train_cnn(config=None, batch_size=32, epochs=1):
     test_dataset = DesedMelDataset(split="test", config=config)
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    model = CNNModel()
-
+    model = CNNModel().to(device)
     optimizer = config["optimizer"](model.parameters(), lr=learning_rate)
     loss_fn = config["loss"]()
 
-    model.to(device)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=config.get("scheduler_factor", 0.5),
+        patience=config.get("scheduler_patience", 3),
+    )
+    early_stopping = EarlyStopping(patience=config.get("early_stopping_patience", 6))
 
+    train_losses_history = []
+    val_losses_history = []
+    val_f1_history = []
+
+    print("\n--- Entraînement CRNN ---")
     for epoch in range(epochs):
         model.train()
+        running_train_loss = 0.0
 
-        for batch in train_dataloader:
-            X_train = batch[0].to(device)
-            Y_train = batch[1].to(device)
-
-            X_logits = model(X_train)
-            loss = loss_fn(X_logits, Y_train)
+        for step, (X_train, Y_train) in enumerate(train_dataloader, start=1):
+            X_train, Y_train = X_train.to(device), Y_train.to(device)
 
             optimizer.zero_grad()
+            X_logits = model(X_train)
+            loss = loss_fn(X_logits, Y_train)
             loss.backward()
             optimizer.step()
 
+            running_train_loss += loss.item()
+            print_progress_bar(
+                step,
+                len(train_dataloader),
+                prefix=f"Epoch {epoch+1}/{epochs}",
+                suffix=f"| Batch Loss: {loss.item():.4f}",
+            )
+
+        avg_train_loss = running_train_loss / len(train_dataloader)
+        train_losses_history.append(avg_train_loss)
+
         model.eval()
-        mean_f1_score = 0
+        running_val_loss = 0.0
+        all_preds = []
+        all_targets = []
 
         with torch.inference_mode():
-            for batch in test_dataloader:
-                X_test = batch[0].to(device)
-                Y_test = batch[1].to(device)
+            for X_test, Y_test in test_dataloader:
+                X_test, Y_test = X_test.to(device), Y_test.to(device)
 
                 Y_logits = model(X_test)
-                loss = loss_fn(Y_logits, Y_train)
+                val_loss = loss_fn(Y_logits, Y_test)
+                running_val_loss += val_loss.item()
 
                 Y_pred = torch.round(torch.sigmoid(Y_logits))
-                Y_pred = Y_pred.to("cpu")
-                Y_test.to = Y_test.to("cpu")
+                all_preds.append(Y_pred.cpu())
+                all_targets.append(Y_test.cpu())
 
-                mean_f1_score += f1_score(Y_test, Y_pred, average="macro")
+        avg_val_loss = running_val_loss / len(test_dataloader)
+        val_losses_history.append(avg_val_loss)
 
-    mean_f1_score = mean_f1_score / len(test_dataloader)
-    print(mean_f1_score)
-    return model
+        all_preds = torch.cat(all_preds, dim=0)
+        all_targets = torch.cat(all_targets, dim=0)
+        epoch_f1 = f1_score(all_targets, all_preds, average="macro")
+        val_f1_history.append(epoch_f1)
 
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(
+            f"   -> Train Loss: {avg_train_loss:.4f} | "
+            f"Val Loss: {avg_val_loss:.4f} | "
+            f"Val F1: {epoch_f1:.4f} | "
+            f"LR: {current_lr:.6f}"
+        )
 
-#entraînement des svm
+        scheduler.step(avg_val_loss)
+        early_stopping(avg_val_loss, model)
+
+        if early_stopping.early_stop:
+            print(f"Early stopping à l'epoch {epoch+1} (meilleure Val Loss : {early_stopping.best_loss:.4f})")
+            break
+
+    early_stopping.load_best_weights(model)
+
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, "cnn_best.pth")
+    torch.save(model.state_dict(), save_path)
+    print(f"Modèle CRNN sauvegardé dans : {save_path}")
+
+    plot_history(train_losses_history, val_losses_history, val_f1_history, "CRNN")
+    return model, {"train_loss": train_losses_history, "val_loss": val_losses_history, "val_f1": val_f1_history}
+
 
 def constructOutput(svm_list, input_data):
-    output = np.zeros(10)
+    output = np.zeros(len(svm_list))
     for i, clf in enumerate(svm_list):
-        Y_pred = clf.predict(input_data)
-        output[i] = Y_pred
+        output[i] = clf.predict(input_data)
     return output
 
 
-def train_svm(config=None):
+def train_svm(config=None, save_dir="./Models/Saved_Models"):
     config = config if config is not None else read_config()
     n_classes = config["n_classes"]
 
@@ -184,13 +248,16 @@ def train_svm(config=None):
     X_train, Y_train_all = [], []
     X_test, Y_test_all = [], []
 
-    for data in train_dataloader:
-        X_train.append(data[0])
-        Y_train_all.append(data[1])
+    print("\n--- Extraction MFCC & Entraînement Multi-SVM ---")
+    for step, (x, y) in enumerate(train_dataloader, start=1):
+        X_train.append(x)
+        Y_train_all.append(y)
+        print_progress_bar(step, len(train_dataloader), prefix="MFCC Train")
 
-    for data in test_dataloader:
-        X_test.append(data[0])
-        Y_test_all.append(data[1])
+    for step, (x, y) in enumerate(test_dataloader, start=1):
+        X_test.append(x)
+        Y_test_all.append(y)
+        print_progress_bar(step, len(test_dataloader), prefix="MFCC Test ")
 
     X_train = np.array(X_train).squeeze()
     X_test = np.array(X_test).squeeze()
@@ -205,7 +272,6 @@ def train_svm(config=None):
 
     svm_lists = []
     svm_f1_scores = []
-    verif_sum = []
     precision_scores = []
     recall_scores = []
     best_params = []
@@ -228,32 +294,34 @@ def train_svm(config=None):
 
         Y_pred = clf.predict(X_test_n)
 
-        svm_f1_scores.append(f1_score(Y_test, Y_pred))
-        verif_sum.append(Y_pred.sum().item())
+        f1_cls = f1_score(Y_test, Y_pred)
+        svm_f1_scores.append(f1_cls)
         precision_scores.append(precision_score(Y_test, Y_pred))
         recall_scores.append(recall_score(Y_test, Y_pred))
 
-    print("scores f1 :", svm_f1_scores)
-    print("précisions par classe :", precision_scores)
-    print("recall par classe", recall_scores)
-    print("meilleurs paramètres par classe", best_params)
-    print("meilleurs scores pour les meilleurs paramètres par classe", best_scores)
-    print(verif_sum)
+        print_progress_bar(
+            i + 1,
+            n_classes,
+            prefix="GridSearch SVM",
+            suffix=f"| Classe {i+1}/{n_classes} F1: {f1_cls:.4f}",
+        )
 
-    X_unique_test, Y_unique_test = test_dataset[47]
-    X_unique_test = X_unique_test.reshape(1, -1)
-    X_unique_test_n = scaler.transform(X_unique_test)
+    print(f"F1 Macro global : {np.mean(svm_f1_scores):.4f}")
+    print("Scores F1 par classe :", svm_f1_scores)
+    print("Précisions par classe :", precision_scores)
+    print("Recall par classe :", recall_scores)
+    print("Meilleurs paramètres :", best_params)
 
-    test = constructOutput(svm_lists, X_unique_test_n)
-    print(test)
-    print(Y_unique_test)
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, "multi_svm.joblib")
+    joblib.dump({"models": svm_lists, "scaler": scaler}, save_path)
+    print(f"Modèle Multi-SVM sauvegardé dans : {save_path}")
 
     return svm_lists, scaler
 
 
 if __name__ == "__main__":
     cfg = read_config()
-
     # train_m5(cfg)
     # train_cnn(cfg)
     # train_svm(cfg)

@@ -67,6 +67,12 @@ def read_config():
 
     # Scheduler
     scheduler = config.get('Scheduler', 'scheduler')
+    scheduler_patience = config.getint('Scheduler', 'scheduler_patience')
+    scheduler_factor = config.getfloat('Scheduler', 'scheduler_factor')
+
+    #early stopping
+    early_stopping_patience = config.getint('Early_stopping', 'Early_stopping_patience')
+    early_stopping_delta = config.getfloat ('Early_stopping', 'Early_stopping_delta')
 
     # Store retrieved values in a dictionary
     config_values = {
@@ -87,11 +93,16 @@ def read_config():
         'audio_seconds': audio_seconds,
 
         'scheduler': scheduler,
+        'scheduler_patience': scheduler_patience,
+        'scheduler_factor': scheduler_factor, 
         
         'raw_train_datas_path': raw_train_datas_path,
         'raw_test_datas_path': raw_test_datas_path,
         'train_metadata_path': train_metadata_path,
-        'test_metadata_path': eval_metadata_path
+        'test_metadata_path': eval_metadata_path,
+
+        'early_stopping_patience': early_stopping_patience
+
     }
 
     return config_values

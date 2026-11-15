@@ -31,7 +31,14 @@ def create_config():
     }
 
     config['Scheduler'] = {
-        'SCHEDULER': 'Sbzkz'
+        'SCHEDULER': 'Sbzkz',
+        'scheduler_factor': '0.5',
+        'scheduler_patience': '2'
+    }
+
+    config['Early_stopping'] = {
+        'Early_stopping_patience': '10',
+        'Early_stopping_delta': '0.001'
     }
 
     config['Datas'] = {
