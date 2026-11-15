@@ -1,4 +1,7 @@
 import configparser
+"""
+run create_config() to return to the default config, else you should prefere to modify config.ini directly
+"""
 
 def create_config():
     config = configparser.ConfigParser()
@@ -14,7 +17,7 @@ def create_config():
 
     config['Optim and loss'] = {
         'OPTIMIZER': 'Adam',
-        'LOSS': 'BCELogits'
+        'LOSS': 'BCEWithLogitsLoss'
     }
 
     config['Hyperparameters'] = {
