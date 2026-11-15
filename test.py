@@ -16,7 +16,7 @@ def test_m5(model=None, test_loader=None, config=None, batch_size=32, weights_pa
     if test_loader is None:
         test_dataset = DesedDataset(
             split="eval",
-            annotations_file=config["eval_metadata_path"],
+            annotations_file=config["test_metadata_path"],
             sounds_dir=config["raw_test_datas_path"],
             config=config
         )
@@ -52,7 +52,7 @@ def test_crnn(model=None, test_loader=None, config=None, batch_size=32, weights_
     if test_loader is None:
         test_dataset = DesedMelDataset(
             split="eval",
-            annotations_file=config["eval_metadata_path"],
+            annotations_file=config["test_metadata_path"],
             sounds_dir=config["raw_test_datas_path"],
             config=config
         )
@@ -94,7 +94,7 @@ def test_svm(model=None, test_data=None, config=None, model_path="./Models/Saved
     if test_data is None:
         test_dataset = MicroDataLoader(
             split="eval",
-            csv_path=config["eval_metadata_path"],
+            csv_path=config["test_metadata_path"],
             raw_data_path=config["raw_test_datas_path"],
             config=config
         )
