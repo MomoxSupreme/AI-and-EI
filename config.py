@@ -46,7 +46,7 @@ def create_config():
         'raw_train_datas_path': "./Data/raw/audio/train",
         'raw_test_datas_path': "./Data/raw/audio/eval",
         'train_metadata_path': "./Data/raw/metadata/train/public_weak.tsv",
-        'eval_metadata_path': "./Data/raw/metadata/eval/public_weak.tsv"
+        'test_metadata_path': "./Data/raw/metadata/eval/public_weak.tsv"
     }
 
     # Write the configuration to a file

@@ -63,7 +63,7 @@ def read_config():
     raw_train_datas_path = config.get('Datas', 'raw_train_datas_path')
     raw_test_datas_path = config.get('Datas', 'raw_test_datas_path')
     train_metadata_path = config.get('Datas', 'train_metadata_path')
-    eval_metadata_path = config.get('Datas', 'eval_metadata_path')
+    test_metadata_path = config.get('Datas', 'test_metadata_path')
 
     # Scheduler
     scheduler = config.get('Scheduler', 'scheduler')
@@ -99,7 +99,7 @@ def read_config():
         'raw_train_datas_path': raw_train_datas_path,
         'raw_test_datas_path': raw_test_datas_path,
         'train_metadata_path': train_metadata_path,
-        'eval_metadata_path': eval_metadata_path,
+        'test_metadata_path': test_metadata_path,
 
         'early_stopping_patience': early_stopping_patience,
         'epochs': epochs
