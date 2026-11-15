@@ -9,9 +9,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from torch.utils.data import DataLoader
 
-from config_reader import read_config
-from datasets import DesedDataset, DesedMelDataset, MicroDataLoader
-from models import CNNModel, M5model
+from Utils.config_reader import read_config
+from Utils.datasets import DesedDataset, DesedMelDataset, MicroDataLoader
+from Models.models import CNNModel, M5model
 from Utils.scheduler import EarlyStopping
 from Utils.visualize import *
 
