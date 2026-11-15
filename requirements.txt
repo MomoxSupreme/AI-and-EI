@@ -1,0 +1,9 @@
+torch
+torchaudio
+numpy
+pandas
+scikit-learn
+joblib
+matplotlib
+librosa
+codecarbon
