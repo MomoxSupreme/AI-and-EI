@@ -7,11 +7,10 @@ import torchaudio
 import torchaudio.functional as F
 import torchaudio.transforms as T
 from torch.utils.data import Dataset
-from config_reader import read_config
+from Utils.config_reader import read_config
 
 
-#datasset pour le modèle sur waveform
-
+# dataset pour le modèle sur waveform
 class DesedDataset(Dataset):
 
     classes = [
@@ -20,42 +19,44 @@ class DesedDataset(Dataset):
         "Speech", "Vacuum_cleaner"
     ]
 
-    def __init__(self, annotations_file, sounds_dir,
+    def __init__(self, split="train", annotations_file=None, sounds_dir=None,
                  classes=classes, transform=None, config=None):
 
         self.config = config if config is not None else read_config()
-        self.annotations = pd.read_csv(
-            annotations_file, sep="\t"
-        )
 
+        if annotations_file is None:
+            annotations_file = (
+                self.config["train_metadata_path"]
+                if split == "train"
+                else self.config["test_metadata_path"]
+            )
+        if sounds_dir is None:
+            sounds_dir = (
+                self.config["raw_train_datas_path"]
+                if split == "train"
+                else self.config["raw_test_datas_path"]
+            )
+
+        self.annotations = pd.read_csv(annotations_file, sep="\t")
         self.sounds_dir = sounds_dir
         self.classes = classes
         self.transform = transform
-
         self.files = self.annotations["filename"].unique()
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
-
         filename = self.files[idx]
+        snd_path = os.path.join(self.sounds_dir, filename)
 
-        snd_path = os.path.join(
-            self.sounds_dir, filename
-        )
-
-        sound = self.load_audio(
-            snd_path,
-            target_sr=self.config["target_rate"],
-            duration=self.config["audio_seconds"]
-        )
+        sound = self.load_audio(snd_path)
 
         annotations = self.annotations[
             self.annotations["filename"] == filename
         ]
 
-        label = torch.zeros(len(self.classes))
+        label = torch.zeros(self.config["n_classes"])
 
         for event in annotations["event_label"]:
             if event in self.classes:
@@ -63,7 +64,10 @@ class DesedDataset(Dataset):
 
         return sound, label
 
-    def load_audio(self, path, target_sr=16000, duration=10):
+    def load_audio(self, path):
+        target_sr = self.config["target_rate"]
+        duration = self.config["audio_seconds"]
+
         waveform, sr = torchaudio.load(path)
 
         if waveform.shape[0] > 1:
@@ -89,8 +93,7 @@ class DesedDataset(Dataset):
         return waveform
 
 
-#dataset pour le melspectrogramme
-
+# dataset pour le melspectrogramme
 class DesedMelDataset(Dataset):
 
     classes = [
@@ -99,30 +102,36 @@ class DesedMelDataset(Dataset):
         "Speech", "Vacuum_cleaner"
     ]
 
-    def __init__(self, annotations_file, sounds_dir,
+    def __init__(self, split="train", annotations_file=None, sounds_dir=None,
                  classes=classes, transform=None, config=None):
 
         self.config = config if config is not None else read_config()
-        self.annotations = pd.read_csv(
-            annotations_file, sep="\t"
-        )
 
+        if annotations_file is None:
+            annotations_file = (
+                self.config["train_metadata_path"]
+                if split == "train"
+                else self.config["test_metadata_path"]
+            )
+        if sounds_dir is None:
+            sounds_dir = (
+                self.config["raw_train_datas_path"]
+                if split == "train"
+                else self.config["raw_test_datas_path"]
+            )
+
+        self.annotations = pd.read_csv(annotations_file, sep="\t")
         self.sounds_dir = sounds_dir
         self.classes = classes
         self.transform = transform
-
         self.files = self.annotations["filename"].unique()
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
-
         filename = self.files[idx]
-
-        snd_path = os.path.join(
-            self.sounds_dir, filename
-        )
+        snd_path = os.path.join(self.sounds_dir, filename)
 
         melspec = self.load_audio(snd_path)
 
@@ -130,7 +139,7 @@ class DesedMelDataset(Dataset):
             self.annotations["filename"] == filename
         ]
 
-        label = torch.zeros(len(self.classes))
+        label = torch.zeros(self.config["n_classes"])
 
         for event in annotations["event_label"]:
             if event in self.classes:
@@ -179,71 +188,78 @@ class DesedMelDataset(Dataset):
         )
 
         SPEECH_WAVEFORM = torch.mean(SPEECH_WAVEFORM, dim=0, keepdim=True)
-
         melspec = mel_spectrogram(SPEECH_WAVEFORM)
-
         melspec_db = T.AmplitudeToDB()(melspec)
 
         return melspec_db
 
 
-#dataset pour les svms
-
+# dataset pour les svms
 class MicroDataLoader(Dataset):
     """
     petit "dataloader" pour avoir les données sur ce truc non nn
-
-    doit renvoyer un path vers un audio (train ou data selon)
     """
 
-    def __init__(self, csv_path, raw_data_path, config=None):
+    classes = [
+        "Alarm_bell_ringing", "Blender", "Cat", "Dishes", "Dog",
+        "Electric_shaver_toothbrush", "Frying", "Running_water",
+        "Speech", "Vacuum_cleaner"
+    ]
+
+    def __init__(self, split="train", csv_path=None, raw_data_path=None,
+                 classes=classes, config=None):
 
         self.config = config if config is not None else read_config()
+
+        if csv_path is None:
+            csv_path = (
+                self.config["train_metadata_path"]
+                if split == "train"
+                else self.config["test_metadata_path"]
+            )
+        if raw_data_path is None:
+            raw_data_path = (
+                self.config["raw_train_datas_path"]
+                if split == "train"
+                else self.config["raw_test_datas_path"]
+            )
+
         self.raw_data_path = raw_data_path
-
-        self.annotations = pd.read_csv(
-            csv_path, sep="\t"
-        )
-
+        self.annotations = pd.read_csv(csv_path, sep="\t")
+        self.classes = classes
         self.files = self.annotations["filename"].unique()
-
-        self.classes = self.annotations["event_label"]
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
         sound_path = os.path.join(self.raw_data_path, self.files[idx])
-
-        labels = np.zeros(10)
-
         filename = self.files[idx]
 
         annotations = self.annotations[
             self.annotations["filename"] == filename
         ]
 
-        events = sorted(annotations["event_label"].unique())
+        label = np.zeros(self.config["n_classes"], dtype=np.float32)
 
-        label = [1.0 if c in events else 0.0 for c in sorted(self.classes.unique())]
+        for event in annotations["event_label"]:
+            if event in self.classes:
+                label[self.classes.index(event)] = 1.0
 
-        label = np.array(label)
+        return self.extract_mfcc(sound_path), label
 
-        return self.extract_mfcc(sound_path, sr=self.config["target_rate"]), label
-
-    def extract_mfcc(self, audio_path, sr=16000, n_mfcc=20):
+    def extract_mfcc(self, audio_path, n_mfcc=20):
         """
         fonction d'extractions de caractéristiques qui renvoie un vecteur de dimension 40 (20 moyennes + 20 variances)
         """
+        sr = self.config["target_rate"]
 
-        # chargement de l'audio
         y, sr = librosa.load(
             audio_path,
             sr=sr,
             mono=True
         )
 
-        # acquisition des features
         mfcc = librosa.feature.mfcc(
             y=y,
             sr=sr,
@@ -252,11 +268,9 @@ class MicroDataLoader(Dataset):
             hop_length=512
         )
 
-        # moyenne et variance sur les matrices mfcc pour avoir le vecteur finale
         mfcc_mean = np.mean(mfcc, axis=1)
         mfcc_std = np.std(mfcc, axis=1)
 
-        # les 20 moyennes et les 20 variances sont concaténées dans un gros vecteur
         features = np.concatenate([
             mfcc_mean,
             mfcc_std

@@ -57,7 +57,7 @@ def read_config():
     learning_rate = config.getfloat('Hyperparameters', 'learning_rate')
     n_classes = config.getint('Hyperparameters', 'n_classes')
     n_best_rag = config.getint('Hyperparameters', 'n_best_rag')
-    frames_per_second = config.getint('Hyperparameters', 'frames_per_secon')
+    frames_per_second = config.getint('Hyperparameters', 'frames_per_second')
     audio_seconds = config.getint('Hyperparameters', 'audio_seconds')
 
     raw_train_datas_path = config.get('Datas', 'raw_train_datas_path')
