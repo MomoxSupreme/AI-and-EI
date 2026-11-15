@@ -26,7 +26,7 @@ def create_config():
         'LEARNING_RATE': '0.001',
         'N_CLASSES': '10',
         'N_BEST_RAG': '3',
-        'FRAMES_PER_SECON': '50',
+        'FRAMES_PER_SECOND': '50',
         'AUDIO_SECONDS': '10',
     }
 
@@ -35,8 +35,8 @@ def create_config():
     }
 
     config['Datas'] = {
-        'raw_train_datas_path': "./Data/raw/audio/eval/",
-        'raw_test_datas_path': "./Data/raw/audio/train/",
+        'raw_train_datas_path': "./Data/raw/audio/train/",
+        'raw_test_datas_path': "./Data/raw/audio/eval/",
         'train_metadata_path': "./Data/raw/metadata/eval/public_weak.tsv",
         'eval_metadata_path': "./Data/raw/metadata/train/public_weak.tsv"
     }
