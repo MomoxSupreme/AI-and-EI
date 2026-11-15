@@ -1,3 +1,5 @@
+import matplotlib.pyplot as plt
+
 def print_progress_bar(current, total, prefix="", suffix="", length=30):
     percent = (current / total) * 100
     filled = int(length * current // total)
