@@ -1,279 +1,168 @@
 import os
+
 import librosa
 import numpy as np
 import pandas as pd
 import torch
 import torchaudio
-import torchaudio.functional as F
 import torchaudio.transforms as T
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
+
 from Utils.config_reader import read_config
 
+CLASSES = [
+    "Alarm_bell_ringing", "Blender", "Cat", "Dishes", "Dog",
+    "Electric_shaver_toothbrush", "Frying", "Running_water",
+    "Speech", "Vacuum_cleaner",
+]
 
-# dataset pour le modèle sur waveform
-class DesedDataset(Dataset):
+# paramètres du mel-spectrogramme (importés aussi par evaluate.py pour les sample_input)
+N_FFT = 2048
+MEL_HOP_LENGTH = 256
+N_MELS = 128
 
-    classes = [
-        "Alarm_bell_ringing", "Blender", "Cat", "Dishes", "Dog",
-        "Electric_shaver_toothbrush", "Frying", "Running_water",
-        "Speech", "Vacuum_cleaner"
-    ]
+
+def _resolve(split, config):
+    if split in ("train", "val"):
+        return config["train_metadata_path"], config["raw_train_datas_path"]
+    if split in ("test", "eval"):
+        return config["test_metadata_path"], config["raw_test_datas_path"]
+    raise ValueError(f"split inconnu : {split!r} (attendu : train, val, test)")
+
+
+def _select_files(files, split, config):
+    files = np.array(sorted(files))
+    if split in ("test", "eval"):
+        return files
+    rng = np.random.RandomState(int(config["seed"]))
+    perm = rng.permutation(len(files))
+    n_val = int(len(files) * float(config.get("val_ratio", 0.2)))
+    chosen = perm[:n_val] if split == "val" else perm[n_val:]
+    return files[np.sort(chosen)]
+
+
+class _BaseDesed(Dataset):
+    """Logique commune : lecture du tsv, labels multi-hot précalculés, chargement du waveform."""
+
+    classes = CLASSES
 
     def __init__(self, split="train", annotations_file=None, sounds_dir=None,
-                 classes=classes, transform=None, config=None):
-
+                 transform=None, config=None):
         self.config = config if config is not None else read_config()
+        default_annotations, default_dir = _resolve(split, self.config)
 
-        if annotations_file is None:
-            annotations_file = (
-                self.config["train_metadata_path"]
-                if split == "train"
-                else self.config["test_metadata_path"]
-            )
-        if sounds_dir is None:
-            sounds_dir = (
-                self.config["raw_train_datas_path"]
-                if split == "train"
-                else self.config["raw_test_datas_path"]
-            )
-
-        self.annotations = pd.read_csv(annotations_file, sep="\t")
-        self.sounds_dir = sounds_dir
-        self.classes = classes
+        annotations = pd.read_csv(annotations_file or default_annotations, sep="\t")
+        self.sounds_dir = sounds_dir or default_dir
         self.transform = transform
-        self.files = self.annotations["filename"].unique()
+        self.files = _select_files(annotations["filename"].unique(), split, self.config)
+        self.labels = self._build_labels(annotations)
+        self._resamplers = {}
+
+    def _build_labels(self, annotations):
+        index = {c: i for i, c in enumerate(self.classes)}
+        labels = {}
+        for filename, events in annotations.groupby("filename")["event_label"]:
+            v = np.zeros(len(self.classes), dtype=np.float32)
+            for event in events:
+                if event in index:
+                    v[index[event]] = 1.0
+            labels[filename] = v
+        return labels
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
-        filename = self.files[idx]
-        snd_path = os.path.join(self.sounds_dir, filename)
+        filename = str(self.files[idx])
+        x = self.extract(os.path.join(self.sounds_dir, filename))
+        if self.transform is not None:
+            x = self.transform(x)
+        return x, torch.from_numpy(self.labels[filename])
 
-        sound = self.load_audio(snd_path)
+    def extract(self, path):
+        raise NotImplementedError
 
-        annotations = self.annotations[
-            self.annotations["filename"] == filename
-        ]
+    def _load_waveform(self, path):
+        """Waveform mono, rééchantillonné, de longueur fixe : (1, target_rate * audio_seconds)."""
+        target_sr = int(self.config["target_rate"])
+        target_len = target_sr * int(self.config["audio_seconds"])
 
-        label = torch.zeros(self.config["n_classes"])
-
-        for event in annotations["event_label"]:
-            if event in self.classes:
-                label[self.classes.index(event)] = 1.0
-
-        return sound, label
-
-    def load_audio(self, path):
-        target_sr = self.config["target_rate"]
-        duration = self.config["audio_seconds"]
-
-        waveform, sr = torchaudio.load(path)
-
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
+        wav, sr = torchaudio.load(path)
+        wav = wav.mean(dim=0, keepdim=True)
 
         if sr != target_sr:
-            resampler = torchaudio.transforms.Resample(
-                orig_freq=sr,
-                new_freq=target_sr
-            )
-            waveform = resampler(waveform)
+            if sr not in self._resamplers:
+                self._resamplers[sr] = T.Resample(orig_freq=sr, new_freq=target_sr)
+            wav = self._resamplers[sr](wav)
 
-        target_length = target_sr * duration
-
-        if waveform.shape[1] > target_length:
-            waveform = waveform[:, :target_length]
-        elif waveform.shape[1] < target_length:
-            waveform = torch.nn.functional.pad(
-                waveform,
-                (0, target_length - waveform.shape[1])
-            )
-
-        return waveform
+        n = wav.shape[1]
+        if n > target_len:
+            wav = wav[:, :target_len]
+        elif n < target_len:
+            wav = torch.nn.functional.pad(wav, (0, target_len - n))
+        return wav
 
 
-# dataset pour le melspectrogramme
-class DesedMelDataset(Dataset):
+# dataset pour le modèle sur waveform (M5) -> (1, 160000)
+class DesedDataset(_BaseDesed):
 
-    classes = [
-        "Alarm_bell_ringing", "Blender", "Cat", "Dishes", "Dog",
-        "Electric_shaver_toothbrush", "Frying", "Running_water",
-        "Speech", "Vacuum_cleaner"
-    ]
+    def extract(self, path):
+        return self._load_waveform(path)
 
-    def __init__(self, split="train", annotations_file=None, sounds_dir=None,
-                 classes=classes, transform=None, config=None):
 
-        self.config = config if config is not None else read_config()
+# dataset pour le mel-spectrogramme (CRNN) -> (1, 128, 626)
+class DesedMelDataset(_BaseDesed):
 
-        if annotations_file is None:
-            annotations_file = (
-                self.config["train_metadata_path"]
-                if split == "train"
-                else self.config["test_metadata_path"]
-            )
-        if sounds_dir is None:
-            sounds_dir = (
-                self.config["raw_train_datas_path"]
-                if split == "train"
-                else self.config["raw_test_datas_path"]
-            )
-
-        self.annotations = pd.read_csv(annotations_file, sep="\t")
-        self.sounds_dir = sounds_dir
-        self.classes = classes
-        self.transform = transform
-        self.files = self.annotations["filename"].unique()
-
-    def __len__(self):
-        return len(self.files)
-
-    def __getitem__(self, idx):
-        filename = self.files[idx]
-        snd_path = os.path.join(self.sounds_dir, filename)
-
-        melspec = self.load_audio(snd_path)
-
-        annotations = self.annotations[
-            self.annotations["filename"] == filename
-        ]
-
-        label = torch.zeros(self.config["n_classes"])
-
-        for event in annotations["event_label"]:
-            if event in self.classes:
-                label[self.classes.index(event)] = 1.0
-
-        return melspec, label
-
-    def load_audio(self, path):
-        target_sr = self.config["target_rate"]
-        duration = self.config["audio_seconds"]
-
-        SPEECH_WAVEFORM, SAMPLE_RATE = torchaudio.load(path)
-
-        SPEECH_WAVEFORM = F.resample(
-            SPEECH_WAVEFORM,
-            orig_freq=SAMPLE_RATE,
-            new_freq=target_sr,
-        )
-
-        target_length = target_sr * duration
-
-        if SPEECH_WAVEFORM.shape[1] > target_length:
-            SPEECH_WAVEFORM = SPEECH_WAVEFORM[:, :target_length]
-        elif SPEECH_WAVEFORM.shape[1] < target_length:
-            SPEECH_WAVEFORM = torch.nn.functional.pad(
-                SPEECH_WAVEFORM,
-                (0, target_length - SPEECH_WAVEFORM.shape[1])
-            )
-
-        n_fft = 2048
-        win_length = None
-        hop_length = 256
-        n_mels = 128
-
-        mel_spectrogram = T.MelSpectrogram(
-            sample_rate=target_sr,
-            n_fft=n_fft,
-            win_length=win_length,
-            hop_length=hop_length,
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.mel = T.MelSpectrogram(
+            sample_rate=int(self.config["target_rate"]),
+            n_fft=N_FFT,
+            hop_length=MEL_HOP_LENGTH,
             center=True,
             pad_mode="reflect",
             power=2.0,
             norm="slaney",
-            n_mels=n_mels,
+            n_mels=N_MELS,
             mel_scale="htk",
         )
+        self.to_db = T.AmplitudeToDB()
 
-        SPEECH_WAVEFORM = torch.mean(SPEECH_WAVEFORM, dim=0, keepdim=True)
-        melspec = mel_spectrogram(SPEECH_WAVEFORM)
-        melspec_db = T.AmplitudeToDB()(melspec)
-
-        return melspec_db
+    def extract(self, path):
+        return self.to_db(self.mel(self._load_waveform(path)))
 
 
-# dataset pour les svms
-class MicroDataLoader(Dataset):
-    """
-    petit "dataloader" pour avoir les données sur ce truc non nn
-    """
+# dataset pour les SVM -> vecteur de 40 valeurs (20 moyennes + 20 écarts-types de MFCC)
+class MicroDataLoader(_BaseDesed):
 
-    classes = [
-        "Alarm_bell_ringing", "Blender", "Cat", "Dishes", "Dog",
-        "Electric_shaver_toothbrush", "Frying", "Running_water",
-        "Speech", "Vacuum_cleaner"
-    ]
+    def extract(self, path, n_mfcc=20):
+        sr = int(self.config["target_rate"])
+        y, sr = librosa.load(path, sr=sr, mono=True)
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc, n_fft=2048, hop_length=512)
+        return np.concatenate([mfcc.mean(axis=1), mfcc.std(axis=1)]).astype(np.float32)
 
-    def __init__(self, split="train", csv_path=None, raw_data_path=None,
-                 classes=classes, config=None):
 
-        self.config = config if config is not None else read_config()
+def make_loader(dataset, batch_size=32, shuffle=False, config=None):
+    config = config if config is not None else {}
+    num_workers = int(config.get("num_workers", 0))
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
+        pin_memory=str(config.get("device", "cpu")).startswith("cuda"),
+    )
 
-        if csv_path is None:
-            csv_path = (
-                self.config["train_metadata_path"]
-                if split == "train"
-                else self.config["test_metadata_path"]
-            )
-        if raw_data_path is None:
-            raw_data_path = (
-                self.config["raw_train_datas_path"]
-                if split == "train"
-                else self.config["raw_test_datas_path"]
-            )
 
-        self.raw_data_path = raw_data_path
-        self.annotations = pd.read_csv(csv_path, sep="\t")
-        self.classes = classes
-        self.files = self.annotations["filename"].unique()
-
-    def __len__(self):
-        return len(self.files)
-
-    def __getitem__(self, idx):
-        sound_path = os.path.join(self.raw_data_path, self.files[idx])
-        filename = self.files[idx]
-
-        annotations = self.annotations[
-            self.annotations["filename"] == filename
-        ]
-
-        label = np.zeros(self.config["n_classes"], dtype=np.float32)
-
-        for event in annotations["event_label"]:
-            if event in self.classes:
-                label[self.classes.index(event)] = 1.0
-
-        return self.extract_mfcc(sound_path), label
-
-    def extract_mfcc(self, audio_path, n_mfcc=20):
-        """
-        fonction d'extractions de caractéristiques qui renvoie un vecteur de dimension 40 (20 moyennes + 20 variances)
-        """
-        sr = self.config["target_rate"]
-
-        y, sr = librosa.load(
-            audio_path,
-            sr=sr,
-            mono=True
-        )
-
-        mfcc = librosa.feature.mfcc(
-            y=y,
-            sr=sr,
-            n_mfcc=n_mfcc,
-            n_fft=2048,
-            hop_length=512
-        )
-
-        mfcc_mean = np.mean(mfcc, axis=1)
-        mfcc_std = np.std(mfcc, axis=1)
-
-        features = np.concatenate([
-            mfcc_mean,
-            mfcc_std
-        ])
-
-        return features
+def load_svm_arrays(split, config=None, progress=None):
+    """Extrait les MFCC d'un split et renvoie (X, Y) en numpy. `progress(step, total)` est optionnel."""
+    dataset = MicroDataLoader(split=split, config=config)
+    X, Y = [], []
+    for i in range(len(dataset)):
+        x, y = dataset[i]
+        X.append(x)
+        Y.append(y.numpy())
+        if progress is not None:
+            progress(i + 1, len(dataset))
+    return np.stack(X), np.stack(Y)

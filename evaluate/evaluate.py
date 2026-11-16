@@ -1,27 +1,24 @@
 import pandas as pd
 import torch
-from training import *
-from test import *
-from Utils.config_reader import read_config
-from Utils.stats import get_pytorch_stats, get_svm_stats
 from codecarbon import EmissionsTracker
 
+from test import test_crnn, test_m5, test_svm
+from training import train_cnn, train_m5, train_svm
+from Utils.config_reader import read_config
+from Utils.datasets import MEL_HOP_LENGTH, N_MELS, DesedDataset, DesedMelDataset, make_loader
+from Utils.stats import get_pytorch_stats, get_svm_stats
 
 """
-this file will construct the csv file containing the datas usefull for the evaluations
-we use codecarbon to measure environmental impact (notably energy consumption that has also an economic impact)
-and we use native pytorch functions to get the params and flops
+
 """
 
 
 def measure_training(model_name, train_function):
-    """
-    Measure the energy consumption and emissions of a training function.
-    """
+    """Mesure l'énergie et les émissions d'une fonction d'entraînement."""
     tracker = EmissionsTracker(
         project_name=f"{model_name}_train",
         save_to_file=False,
-        log_level="error"
+        log_level="error",
     )
 
     tracker.start()
@@ -39,26 +36,20 @@ def measure_training(model_name, train_function):
     return model, history, energy_consumption, emissions
 
 
-def measure_testing(model_name, model, test_function, test_loader):
-    """
-    Measure the energy consumption per passage and F1 score during inference/testing.
-    """
+def measure_testing(model_name, model, test_function, test_data, n_samples, config):
+    """Mesure l'énergie par passage (clip) et le F1 macro en test."""
     tracker = EmissionsTracker(
         project_name=f"{model_name}_test",
         save_to_file=False,
-        log_level="error"
+        log_level="error",
     )
 
     tracker.start()
-    test_f1 = test_function(model, test_loader)
+    test_f1 = test_function(model, test_data, config=config)
     tracker.stop()
 
-    energy_data = tracker.final_emissions_data
-    total_test_energy = energy_data.energy_consumed
-
-    # Calcul de la consommation moyenne par échantillon (passage)
-    num_samples = len(test_loader.dataset) if hasattr(test_loader, "dataset") else len(test_loader)
-    energy_per_passage = total_test_energy / num_samples if num_samples > 0 else 0.0
+    total_test_energy = tracker.final_emissions_data.energy_consumed
+    energy_per_passage = total_test_energy / n_samples if n_samples > 0 else 0.0
 
     print(f"{model_name} (Test):")
     print(f"Test F1: {test_f1:.4f}")
@@ -68,25 +59,33 @@ def measure_testing(model_name, model, test_function, test_loader):
 
 
 def main():
+    cfg = read_config()
+
+    n_test = len(DesedDataset(split="test", config=cfg))
+
+    n_audio_samples = int(cfg["target_rate"]) * int(cfg["audio_seconds"]) 
+    n_frames = n_audio_samples // MEL_HOP_LENGTH + 1                   
+
     models = {
         "M5": {
-            "train": train_m5,
+            "train": lambda: train_m5(cfg),
             "test": test_m5,
-            "test_data": None,     
-            "sample_input": torch.randn(1, 160000)
+            # loader construit ici : l'itération (donc le chargement audio) a lieu dans la mesure
+            "test_data": make_loader(DesedDataset(split="test", config=cfg), 32, False, cfg),
+            "sample_input": torch.randn(1, n_audio_samples),
         },
         "CRNN": {
-            "train": train_cnn,
+            "train": lambda: train_cnn(cfg),
             "test": test_crnn,
-            "test_data": None,     
-            "sample_input": torch.randn(1, 128, 626)
+            "test_data": make_loader(DesedMelDataset(split="test", config=cfg), 32, False, cfg),
+            "sample_input": torch.randn(1, N_MELS, n_frames),
         },
         "SVM": {
-            "train": train_svm,
+            "train": lambda: train_svm(cfg),
             "test": test_svm,
-            "test_data": None,          
-            "sample_input": None
-        }
+            "test_data": None,  # test_svm extrait lui-même les MFCC, dans la mesure d'énergie
+            "sample_input": None,
+        },
     }
 
     measures = {
@@ -96,31 +95,26 @@ def main():
         "flops_per_passage": [],
         "training_consumption_kwh": [],
         "training_emissions_kg": [],
-        "best_val_f1": [],
+        "best_val_f1": [],  
         "test_f1": [],
-        "test_consumption_kwh_per_passage": []
+        "test_consumption_kwh_per_passage": [],
     }
 
-    for model_name, cfg in models.items():
-        model, history, train_energy, train_emissions = measure_training(
-            model_name,
-            cfg["train"]
-        )
+    for model_name, model_cfg in models.items():
+        model, history, train_energy, train_emissions = measure_training(model_name, model_cfg["train"])
 
         best_val_f1 = max(history["val_f1"]) if history.get("val_f1") else 0.0
 
         if model_name == "SVM":
-            total_params, flops = get_svm_stats(model)
+            svm_list, _scaler = model
+            total_params, flops = get_svm_stats(svm_list)
             trainable_params = total_params
         else:
-            total_params, flops = get_pytorch_stats(model, cfg["sample_input"])
+            total_params, flops = get_pytorch_stats(model, model_cfg["sample_input"])
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
         test_f1, test_energy_per_passage = measure_testing(
-            model_name,
-            model,
-            cfg["test"],
-            cfg["test_data"]
+            model_name, model, model_cfg["test"], model_cfg["test_data"], n_test, cfg
         )
 
         measures["model_name"].append(model_name)
@@ -133,8 +127,7 @@ def main():
         measures["test_f1"].append(test_f1)
         measures["test_consumption_kwh_per_passage"].append(test_energy_per_passage)
 
-    measures_df = pd.DataFrame(measures)
-    measures_df.to_csv("results.csv", index=False)
+    pd.DataFrame(measures).to_csv("results.csv", index=False)
 
 
 if __name__ == "__main__":
