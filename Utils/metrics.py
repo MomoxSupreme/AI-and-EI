@@ -3,6 +3,10 @@ from sklearn.metrics import average_precision_score, f1_score
 
 
 def evaluate_loader(model, loader, loss_fn, device, threshold=0.5):
+    """
+    Évalue le modèle sur TOUT le loader, puis calcule les métriques une seule fois.
+    Renvoie (loss moyenne par clip ou None, F1 macro, mAP macro).
+    """
     model.eval()
     total_loss, n = 0.0, 0
     probs, targets = [], []

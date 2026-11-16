@@ -23,6 +23,7 @@ N_MELS = 128
 
 
 def _resolve(split, config):
+    """train/val -> données du dossier train ; test/eval -> données du dossier eval."""
     if split in ("train", "val"):
         return config["train_metadata_path"], config["raw_train_datas_path"]
     if split in ("test", "eval"):
@@ -31,6 +32,10 @@ def _resolve(split, config):
 
 
 def _select_files(files, split, config):
+    """
+    Découpe train/val PAR FICHIER, de façon déterministe (graine = config['seed']).
+    Le split test/eval garde tous les fichiers : il n'est jamais utilisé pour choisir quoi que ce soit.
+    """
     files = np.array(sorted(files))
     if split in ("test", "eval"):
         return files
@@ -166,3 +171,11 @@ def load_svm_arrays(split, config=None, progress=None):
         if progress is not None:
             progress(i + 1, len(dataset))
     return np.stack(X), np.stack(Y)
+
+
+# quel dataset utiliser pour chaque famille de modèles
+DATASET_FOR_KIND = {
+    "m5": DesedDataset,
+    "cnn2d": DesedMelDataset,
+    "crnn": DesedMelDataset,
+}

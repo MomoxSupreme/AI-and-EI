@@ -1,133 +1,161 @@
+from functools import partial
+
+import numpy as np
 import pandas as pd
 import torch
 from codecarbon import EmissionsTracker
+from sklearn.metrics import average_precision_score, f1_score
 
-from test import test_crnn, test_m5, test_svm
-from training import train_cnn, train_m5, train_svm
+from Models.models import model_name
+from test import test_model, test_svm
+from training import train_model, train_svm
 from Utils.config_reader import read_config
-from Utils.datasets import MEL_HOP_LENGTH, N_MELS, DesedDataset, DesedMelDataset, make_loader
+from Utils.datasets import DATASET_FOR_KIND, MEL_HOP_LENGTH, N_MELS, DesedDataset, make_loader
 from Utils.stats import get_pytorch_stats, get_svm_stats
 
 """
+Construit results.csv : une ligne par (modèle, largeur, graine) + une ligne de baseline triviale.
+codecarbon mesure l'énergie / les émissions, Utils.stats les paramètres et FLOPs.
 
+Règle de mesure : pour tous les modèles, l'énergie de test couvre toute la chaîne
+fichier wav -> prédiction (chargement, rééchantillonnage, mel ou MFCC compris).
 """
+
+# --- à régler ici -------------------------------------------------------------------------------
+# largeurs testées par famille (1.0 = architecture de référence)
+WIDTHS = {
+    "m5": [0.25, 0.5, 1.0],
+    "cnn2d": [0.5, 1.0, 2.0],
+    "crnn": [0.5, 1.0, 2.0],
+}
+SEEDS = None          # None -> graine de config.ini ; [0, 1, 2] pour 3 répétitions (3x plus long)
+SMOKE_TEST = False    # True : 1 largeur par famille, 1 epoch, pour vérifier que tout tourne
+# -----------------------------------------------------------------------------------------------
+
+COLUMNS = [
+    "model_name", "family", "width", "seed",
+    "total_params", "trainable_params", "flops_per_passage",
+    "training_consumption_kwh", "training_emissions_kg",
+    "best_val_f1", "test_f1", "test_map", "test_consumption_kwh_per_passage",
+]
 
 
 def measure_training(model_name, train_function):
     """Mesure l'énergie et les émissions d'une fonction d'entraînement."""
-    tracker = EmissionsTracker(
-        project_name=f"{model_name}_train",
-        save_to_file=False,
-        log_level="error",
-    )
+    tracker = EmissionsTracker(project_name=f"{model_name}_train", save_to_file=False, log_level="error")
 
     tracker.start()
     model, history = train_function()
     tracker.stop()
 
     energy_data = tracker.final_emissions_data
-    energy_consumption = energy_data.energy_consumed
-    emissions = energy_data.emissions
-
-    print(f"{model_name} (Train):")
-    print(f"Energy consumption: {energy_consumption:.6f} kWh")
-    print(f"Emissions: {emissions:.6f} kg CO2eq")
-
-    return model, history, energy_consumption, emissions
+    print(f"{model_name} (Train): {energy_data.energy_consumed:.6f} kWh | {energy_data.emissions:.6f} kg CO2eq")
+    return model, history, energy_data.energy_consumed, energy_data.emissions
 
 
 def measure_testing(model_name, model, test_function, test_data, n_samples, config):
-    """Mesure l'énergie par passage (clip) et le F1 macro en test."""
-    tracker = EmissionsTracker(
-        project_name=f"{model_name}_test",
-        save_to_file=False,
-        log_level="error",
-    )
+    """Mesure l'énergie par passage (clip), le F1 macro et la mAP en test."""
+    tracker = EmissionsTracker(project_name=f"{model_name}_test", save_to_file=False, log_level="error")
 
     tracker.start()
-    test_f1 = test_function(model, test_data, config=config)
+    test_f1, test_map = test_function(model, test_data, config=config)
     tracker.stop()
 
     total_test_energy = tracker.final_emissions_data.energy_consumed
     energy_per_passage = total_test_energy / n_samples if n_samples > 0 else 0.0
 
-    print(f"{model_name} (Test):")
-    print(f"Test F1: {test_f1:.4f}")
-    print(f"Energy per passage: {energy_per_passage:.9f} kWh")
+    print(f"{model_name} (Test): F1 {test_f1:.4f} | mAP {test_map:.4f} | {energy_per_passage:.9f} kWh/passage")
+    return test_f1, test_map, energy_per_passage
 
-    return test_f1, energy_per_passage
+
+def prior_baseline_row(cfg):
+    """Baseline triviale : prédit la fréquence de chaque classe (calculée sur le train). Aucun audio lu."""
+
+    def labels_of(split):
+        ds = DesedDataset(split=split, config=cfg)
+        return np.stack([ds.labels[str(f)] for f in ds.files])
+
+    p = labels_of("train").mean(axis=0)
+    Y = labels_of("test").astype(int)
+    probs = np.tile(p, (len(Y), 1))
+
+    row = {c: np.nan for c in COLUMNS}
+    row.update({
+        "model_name": "prior", "family": "prior", "total_params": len(p), "trainable_params": 0,
+        "flops_per_passage": 0,
+        "test_f1": f1_score(Y, (probs >= 0.5).astype(int), average="macro", zero_division=0),
+        "test_map": average_precision_score(Y, probs, average="macro"),
+    })
+    return row
+
+
+def run_one(kind, width, run_cfg, test_loaders, sample_inputs, n_test):
+    if kind == "svm":
+        name = "svm"
+        train_fn = lambda: train_svm(run_cfg)
+        test_fn, test_data = test_svm, None   # test_svm extrait lui-même les MFCC, dans la mesure d'énergie
+    else:
+        name = model_name(kind, width)
+        train_fn = lambda: train_model(kind, width, run_cfg, plot=False)
+        test_fn, test_data = partial(test_model, kind, width), test_loaders[kind]
+
+    model, history, train_energy, train_emissions = measure_training(name, train_fn)
+    best_val_f1 = max(history["val_f1"]) if history.get("val_f1") else 0.0  # SVM : F1 moyen en validation croisée
+
+    if kind == "svm":
+        svm_list, _scaler = model
+        total_params, flops = get_svm_stats(svm_list)
+        trainable_params = total_params
+    else:
+        total_params, flops = get_pytorch_stats(model, sample_inputs[kind])
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    test_f1, test_map, test_energy = measure_testing(name, model, test_fn, test_data, n_test, run_cfg)
+
+    return {
+        "model_name": name, "family": kind, "width": width, "seed": run_cfg["seed"],
+        "total_params": total_params, "trainable_params": trainable_params, "flops_per_passage": flops,
+        "training_consumption_kwh": train_energy, "training_emissions_kg": train_emissions,
+        "best_val_f1": best_val_f1, "test_f1": test_f1, "test_map": test_map,
+        "test_consumption_kwh_per_passage": test_energy,
+    }
 
 
 def main():
     cfg = read_config()
+    widths = {k: list(v) for k, v in WIDTHS.items()}
+    if SMOKE_TEST:
+        widths = {k: v[:1] for k, v in widths.items()}
+        cfg = {**cfg, "epochs": 1}
+    seeds = SEEDS or [cfg["seed"]]
 
+    # nombre de clips du split test (lit seulement le .tsv, aucun audio)
     n_test = len(DesedDataset(split="test", config=cfg))
 
-    n_audio_samples = int(cfg["target_rate"]) * int(cfg["audio_seconds"]) 
-    n_frames = n_audio_samples // MEL_HOP_LENGTH + 1                   
-
-    models = {
-        "M5": {
-            "train": lambda: train_m5(cfg),
-            "test": test_m5,
-            # loader construit ici : l'itération (donc le chargement audio) a lieu dans la mesure
-            "test_data": make_loader(DesedDataset(split="test", config=cfg), 32, False, cfg),
-            "sample_input": torch.randn(1, n_audio_samples),
-        },
-        "CRNN": {
-            "train": lambda: train_cnn(cfg),
-            "test": test_crnn,
-            "test_data": make_loader(DesedMelDataset(split="test", config=cfg), 32, False, cfg),
-            "sample_input": torch.randn(1, N_MELS, n_frames),
-        },
-        "SVM": {
-            "train": lambda: train_svm(cfg),
-            "test": test_svm,
-            "test_data": None,  # test_svm extrait lui-même les MFCC, dans la mesure d'énergie
-            "sample_input": None,
-        },
+    # tailles d'entrée SANS axe batch : get_pytorch_stats ajoute lui-même le batch (unsqueeze(0))
+    n_audio_samples = int(cfg["target_rate"]) * int(cfg["audio_seconds"])  # 160000
+    n_frames = n_audio_samples // MEL_HOP_LENGTH + 1                       # 626
+    sample_inputs = {
+        "m5": torch.randn(1, n_audio_samples),
+        "cnn2d": torch.randn(1, N_MELS, n_frames),
+        "crnn": torch.randn(1, N_MELS, n_frames),
+    }
+    test_loaders = {
+        kind: make_loader(DATASET_FOR_KIND[kind](split="test", config=cfg), 32, False, cfg)
+        for kind in widths
     }
 
-    measures = {
-        "model_name": [],
-        "total_params": [],
-        "trainable_params": [],
-        "flops_per_passage": [],
-        "training_consumption_kwh": [],
-        "training_emissions_kg": [],
-        "best_val_f1": [],  
-        "test_f1": [],
-        "test_consumption_kwh_per_passage": [],
-    }
+    runs = [("svm", None)] + [(kind, w) for kind, ws in widths.items() for w in ws]
+    rows = [prior_baseline_row(cfg)]
 
-    for model_name, model_cfg in models.items():
-        model, history, train_energy, train_emissions = measure_training(model_name, model_cfg["train"])
+    for seed in seeds:
+        run_cfg = {**cfg, "seed": seed}   # la graine change aussi le split train/val
+        for kind, width in runs:
+            print(f"\n===== {kind} width={width} seed={seed} =====")
+            rows.append(run_one(kind, width, run_cfg, test_loaders, sample_inputs, n_test))
+            pd.DataFrame(rows, columns=COLUMNS).to_csv("results.csv", index=False)  # sauvegarde après chaque run
 
-        best_val_f1 = max(history["val_f1"]) if history.get("val_f1") else 0.0
-
-        if model_name == "SVM":
-            svm_list, _scaler = model
-            total_params, flops = get_svm_stats(svm_list)
-            trainable_params = total_params
-        else:
-            total_params, flops = get_pytorch_stats(model, model_cfg["sample_input"])
-            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-        test_f1, test_energy_per_passage = measure_testing(
-            model_name, model, model_cfg["test"], model_cfg["test_data"], n_test, cfg
-        )
-
-        measures["model_name"].append(model_name)
-        measures["total_params"].append(total_params)
-        measures["trainable_params"].append(trainable_params)
-        measures["flops_per_passage"].append(flops)
-        measures["training_consumption_kwh"].append(train_energy)
-        measures["training_emissions_kg"].append(train_emissions)
-        measures["best_val_f1"].append(best_val_f1)
-        measures["test_f1"].append(test_f1)
-        measures["test_consumption_kwh_per_passage"].append(test_energy_per_passage)
-
-    pd.DataFrame(measures).to_csv("results.csv", index=False)
+    print("\nrésultats écrits dans results.csv")
 
 
 if __name__ == "__main__":
