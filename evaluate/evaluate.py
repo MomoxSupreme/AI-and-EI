@@ -29,7 +29,7 @@ WIDTHS = {
     "crnn": [0.5, 1.0, 2.0],
 }
 SEEDS = None          # None -> graine de config.ini ; [0, 1, 2] pour 3 répétitions (3x plus long)
-SMOKE_TEST = False    # True : 1 largeur par famille, 1 epoch, pour vérifier que tout tourne
+SMOKE_TEST = True    # True : 1 largeur par famille, 1 epoch, pour vérifier que tout tourne
 # -----------------------------------------------------------------------------------------------
 
 COLUMNS = [
