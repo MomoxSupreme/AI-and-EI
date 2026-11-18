@@ -69,18 +69,17 @@ class CachedEmbeddingDataset(Dataset):
         y[self.metadata[filename]] = 1.0
 
         return X, y
-
+    
     def cache_embeddings(self, backbone, cache_path):
-        """Encode every audio sample once and store the resulting embeddings."""
         was_training = backbone.training
+        backbone.to(DEVICE)
         backbone.eval()
-        embeddings = []
-        labels = []
+        embeddings, labels = [], []
         with torch.no_grad():
             for idx in tqdm(range(len(self)), desc="Encoding dataset"):
                 inputs, label = self[idx]
-                embedding = backbone.encode(**inputs).squeeze(0).cpu()
-                embeddings.append(embedding)
+                inputs = {k: v.to(DEVICE) if hasattr(v, "to") else v for k, v in inputs.items()}
+                embeddings.append(backbone.encode(**inputs).squeeze(0).cpu())
                 labels.append(label)
         if was_training:
             backbone.train()

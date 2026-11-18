@@ -8,6 +8,24 @@ from train import train_step, valid_step
 from transformers import WhisperModel, WhisperFeatureExtractor
 from transformers.modeling_outputs import SequenceClassifierOutput
 
+
+
+
+def build_head(in_features: int, n_classes: int, head_type: str = "linear") -> nn.Sequential:
+    if head_type == "linear":
+        return nn.Sequential(
+            nn.LayerNorm(in_features, eps=1e-5),
+            nn.Linear(in_features, n_classes),
+        )
+    if head_type == "mlp":
+        return nn.Sequential(
+            nn.LayerNorm(in_features, eps=1e-5),
+            nn.Linear(in_features, 512), nn.GELU(), nn.Dropout(0.3),
+            nn.Linear(512, 256), nn.GELU(), nn.Dropout(0.3),
+            nn.Linear(256, n_classes),
+        )
+    raise ValueError(f"Unknown head_type: {head_type!r} (expected one of {HEAD_TYPES})")
+
 class BaseModel(L.LightningModule):
 
     @staticmethod
@@ -34,7 +52,7 @@ class BaseModel(L.LightningModule):
             param.requires_grad = True
 
     @classmethod
-    def from_pretrained(cls, out_dir: str, model_name: str = MODEL_NAME):
+    def from_pretrained(cls, out_dir: str, model_name: str = MODELS_CED[0]):
         """Reload a fine-tuned head on top of the (still frozen) encoder."""
         classifier = cls.__new__(cls)
         L.LightningModule.__init__(classifier)
@@ -71,8 +89,8 @@ class BaseModel(L.LightningModule):
         scheduler = SCHEDULER(
             optimizer,
             mode="min",
-            factor=0.5,
-            patience=2,
+            factor=SCHEDULER_FACTOR,
+            patience=SCHEDULER_PATIENCE,
         )
         return {
             "optimizer": optimizer,
@@ -151,11 +169,7 @@ class CedAudioClassifier(BaseModel):
     `n_classes` outputs is trainable.
     """
 
-    def __init__(
-        self,
-        n_classes: int,
-        model_name: str = MODEL_NAME,
-    ):
+    def __init__(self, n_classes: int, model_name: str = MODELS_CED[0], head_type: str = "linear"):
         super().__init__()
         self.save_hyperparameters()
         self.n_classes = n_classes
@@ -168,15 +182,12 @@ class CedAudioClassifier(BaseModel):
         )
 
         # Replace the 527-class AudioSet head with a fresh n_classes head
-        in_features = self.model.outputlayer[1].in_features  # 768
-        self.model.outputlayer = nn.Sequential(
-            nn.LayerNorm(in_features, eps=1e-5),
-            nn.Linear(in_features, n_classes),
-        )
+        in_features = self.model.outputlayer[1].in_features  # read BEFORE replacing the head
+        self.model.outputlayer = build_head(in_features, n_classes, head_type)
         self.model.outputlayer.apply(self.model._init_weights)
         self.backbone = self.model.encoder
         self.outputlayer = self.model.outputlayer
-
+        
         # Keep config consistent for save / reload / inference
         self.model.config.num_labels = n_classes
         self.model.config.id2label = {i: f"class_{i}" for i in range(n_classes)}
@@ -192,11 +203,9 @@ class CedAudioClassifier(BaseModel):
 
 
 class WhisperAudioClassifier(BaseModel):
-    def __init__(
-        self,
-        n_classes: int,
-        model_name: str = "openai/whisper-tiny",
-    ):
+    
+    
+    def __init__(self, n_classes: int, model_name: str = "openai/whisper-tiny", head_type: str = "linear"):
         super().__init__()
         self.save_hyperparameters()
 
@@ -213,11 +222,7 @@ class WhisperAudioClassifier(BaseModel):
         hidden_size = whisper.config.d_model  # 384
 
         # Classification head
-        self.outputlayer = nn.Sequential(
-            nn.LayerNorm(hidden_size),
-            nn.Linear(hidden_size, n_classes),
-        )
-
+        self.outputlayer = build_head(hidden_size, n_classes, head_type)
         self.outputlayer.apply(whisper._init_weights)
 
         del whisper
@@ -225,9 +230,13 @@ class WhisperAudioClassifier(BaseModel):
         self.backbone = self.encoder
         self._freeze_backbone()
 
+
+
     def encode(self, input_features, **kwargs):
         if input_features.ndim == 4 and input_features.shape[1] == 1:
             input_features = input_features.squeeze(1)
         with torch.no_grad():
-            outputs = self.backbone(input_features=input_features)
-        return self._pool_embeddings(outputs)
+            outputs = self.backbone(input_features=input_features, output_hidden_states=True)
+        valid = AUDIO_SECONDS * FRAMES_PER_SECOND
+        layers = outputs.hidden_states[-3:]          # try also a single middle layer
+        return torch.stack([h[:, :valid].mean(dim=1) for h in layers]).mean(dim=0)
