@@ -1,4 +1,0 @@
-model_name,total_params,trainable_params,flops_per_passage,training_consumption_kwh,best_val_f1,test_f1,test_consumption_kwh_per_passage
-M5,0,0,0,0,0,0,0
-CRNN,0,0,0,0,0,0,0
-SVM,0,0,0,0,0,0,0
