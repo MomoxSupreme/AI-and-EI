@@ -1,5 +1,7 @@
 # 🌱 AI-and-EI-Scratch
 
+Link : [GitHub](https://github.com/MomoxSupreme/AI-and-EI/tree/Scratch)
+
 > **Performance vs. environmental impact in deep learning: how much energy does a better audio classifier cost?**
 
 ![Python](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)
@@ -153,9 +155,14 @@ AI-and-EI-Scratch/
    conda activate "name_of_your_env"
    ```
 
-3. **Install the dependencies:**
+3. **Install the dependencies:** (faster option)
    ```bash
    pip install -r requirements.txt
+   ```
+   **Or Install the dependencies with conda:** (safer option)
+
+   ```bash
+   conda install (*name_of_the_dependencies)
    ```
 
 4. **Get the data.** Place the DESED public evaluation set as expected by `config.ini` (defaults):
