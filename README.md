@@ -237,7 +237,7 @@ I used an AI assistant (Claude) throughout this project, and I want to be upfron
 
 ## 👤 Author
 
-**Louka Menard**, 3rd-year engineering student at Mines Nancy (computer science department), preparing a double degree M.Sc. Computer Engineering + Master 2 IA2VR (AI for vision and robotics). I am looking for an end-of-studies internship in **robotics**; energy-aware models matter on embedded and robotic platforms, where compute budgets are tight.
+**Louka Menard**, 3rd-year engineering student at Mines Nancy (computer science department), preparing a double degree M.Sc. Computer Engineering + Master 2 IA2VR (AI for vision and robotics).
 
 ---
 
